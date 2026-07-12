@@ -117,6 +117,13 @@
             const channelName = channelInput.value.trim().toLowerCase() || 'genel';
             micErrorText.classList.add('hidden'); // Önceki hataları gizle
             
+            // GÜVENLİK KONTROLÜ (HTTPS ŞART)
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                micErrorText.innerHTML = "🚨 <b>Güvenlik Engeli:</b> Tarayıcılar mikrofonu sadece internete yüklü (HTTPS) sitelerde açar. Dosyayı telefonda doğrudan açtığınız için sistem mikrofonu engelledi. Çalışması için internete yüklenmesi gerekir.";
+                micErrorText.classList.remove('hidden');
+                return;
+            }
+
             try {
                 // Mikrofon izni iste
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
