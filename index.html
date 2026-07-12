@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Anlık Telsiz</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #121212; color: #ffffff; touch-action: manipulation; }
+        .ptt-btn {
+            background: linear-gradient(145deg, #ef4444, #dc2626);
+            box-shadow: 0 10px 20px rgba(239, 68, 68, 0.4), inset 0 -3px 0 rgba(0,0,0,0.2);
+            transition: all 0.1s;
+        }
+        .ptt-btn:active, .ptt-btn.active {
+            transform: translateY(5px);
+            box-shadow: 0 5px 10px rgba(239, 68, 68, 0.4), inset 0 3px 0 rgba(0,0,0,0.2);
+            background: linear-gradient(145deg, #dc2626, #b91c1c);
+        }
+        .radar-ring {
+            position: absolute;
+            width: 100%; height: 100%;
+            border-radius: 50%;
+            border: 2px solid #ef4444;
+            animation: radar 1.5s infinite ease-out;
+            opacity: 0;
+            display: none;
+        }
+        .ptt-btn.active .radar-ring { display: block; }
+        @keyframes radar {
+            0% { transform: scale(1); opacity: 0.8; }
+            100% { transform: scale(1.5); opacity: 0; }
+        }
+        .speaker-hole {
+            width: 8px; height: 8px; background: #222; border-radius: 50%; margin: 2px;
+            box-shadow: inset 1px 1px 2px rgba(0,0,0,0.8);
+        }
+    </style>
+    
+    <!-- Uygulama Olarak Yüklenebilme (PWA) Ayarları -->
+    <script>
+        const manifest = {
+            "name": "Anlık Telsiz",
+            "short_name": "Telsiz",
+            "start_url": ".",
+            "display": "standalone",
+            "background_color": "#121212",
+            "theme_color": "#ef4444",
+            "icons": [{
+                "src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZWY0NDQ0IiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTQuOSA5LjFhMTAuNCAxMC40IDAgMCAxIDE0LjIgMG0tMTEuNCAyLjhhNi40IDYuNCAwIDAgMSA4LjYgMG0tNS43IDIuOGEyLjQgMi40IDAgMCAxIDIuOCAwIi8+PHBhdGggZD0iTTEyIDIwaC4wMSIvPjwvc3ZnPg==",
+                "sizes": "512x512",
+                "type": "image/svg+xml",
+                "purpose": "any maskable"
+            }]
+        };
+        // Hataları önlemek için blob URL yerine data URI kullanıyoruz
+        const manifestUrl = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(manifest));
+        document.write(`<link rel="manifest" href="${manifestUrl}">`);
+        
+        // Not: Gerçek bir PWA Service Worker kaydı için ayrı bir "sw.js" dosyasına ihtiyaç vardır.
+        // Tek dosya (Single-file) kısıtlamasından dolayı blob tabanlı Service Worker kaydı kaldırılmıştır.
+    </script>
+</head>
+<body class="flex flex-col h-screen overflow-hidden antialiased">
+
+    <!-- Firebase Kütüphaneleri -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        let currentUser = null;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let unsubscribeSnapshot = null;
+        let joinTime = Date.now();
+        let isRecording = false;
+        let isPlaying = false;
+        let audioPlayer = new Audio();
+
+        const loginScreen = document.getElementById('login-screen');
+        const radioScreen = document.getElementById('radio-screen');
+        const channelInput = document.getElementById('channel-input');
+        const joinBtn = document.getElementById('join-btn');
+        const pttBtn = document.getElementById('ptt-btn');
+        const statusText = document.getElementById('status-text');
+        const currentChannelDisplay = document.getElementById('current-channel');
+        const leaveBtn = document.getElementById('leave-btn');
+
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                statusText.innerText = "Bağlantı hatası!";
+                statusText.className = "text-red-500 font-bold mt-4";
+            }
+        };
+        initAuth();
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                currentUser = user;
+                joinBtn.disabled = false;
+                joinBtn.innerText = "Kanala Bağlan";
+            }
+        });
+
+        joinBtn.addEventListener('click', async () => {
+            const channelName = channelInput.value.trim().toLowerCase() || 'genel';
+            
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                setupMediaRecorder(stream);
+                
+                // Bildirim izni iste
+                if ("Notification" in window && Notification.permission !== "granted") {
+                    Notification.requestPermission();
+                }
+                
+                loginScreen.classList.add('hidden');
+                radioScreen.classList.remove('hidden');
+                currentChannelDisplay.innerText = "Kanal: " + channelName.toUpperCase();
+                
+                joinChannel(channelName);
+            } catch (error) {
+                alert("Telsizi kullanmak için mikrofon izni vermeniz gerekiyor.");
+            }
+        });
+
+        const joinChannel = (channelName) => {
+            if (unsubscribeSnapshot) unsubscribeSnapshot();
+            
+            joinTime = Date.now();
+            const safeChannelName = "channel_" + channelName.replace(/[^a-z0-9]/g, '');
+            const channelRef = collection(db, 'artifacts', appId, 'public', 'data', safeChannelName);
+            
+            statusText.innerText = "Dinleniyor...";
+            statusText.className = "text-green-400 font-bold mt-4";
+
+            unsubscribeSnapshot = onSnapshot(channelRef, (snapshot) => {
+                snapshot.docChanges().forEach((change) => {
+                    if (change.type === 'added') {
+                        const data = change.doc.data();
+                        if (data.timestamp > joinTime && data.senderId !== currentUser.uid) {
+                            playIncomingAudio(data.audioBase64);
+                            
+                            // Arka plandayken bildirim gönder
+                            if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+                                new Notification("Telsiz Anonsu", {
+                                    body: "Kanaldan yeni bir sesli mesaj geldi!",
+                                });
+                            }
+                        }
+                    }
+                });
+            });
+        };
+
+        const setupMediaRecorder = (stream) => {
+            mediaRecorder = new MediaRecorder(stream);
+            
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) audioChunks.push(event.data);
+            };
+
+            mediaRecorder.onstop = async () => {
+                if (audioChunks.length === 0) return;
+                
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                audioChunks = [];
+                
+                const reader = new FileReader();
+                reader.readAsDataURL(audioBlob);
+                reader.onloadend = async () => {
+                    await sendAudioData(reader.result);
+                };
+            };
+        };
+
+        const sendAudioData = async (base64data) => {
+            if (!currentUser) return;
+            
+            const channelName = channelInput.value.trim().toLowerCase() || 'genel';
+            const safeChannelName = "channel_" + channelName.replace(/[^a-z0-9]/g, '');
+            const channelRef = collection(db, 'artifacts', appId, 'public', 'data', safeChannelName);
+            
+            try {
+                statusText.innerText = "Gönderiliyor...";
+                statusText.className = "text-yellow-400 font-bold mt-4";
+                
+                await addDoc(channelRef, {
+                    senderId: currentUser.uid,
+                    audioBase64: base64data,
+                    timestamp: Date.now()
+                });
+                
+                statusText.innerText = "Dinleniyor...";
+                statusText.className = "text-green-400 font-bold mt-4";
+            } catch (error) {
+                statusText.innerText = "Gönderilemedi!";
+                statusText.className = "text-red-500 font-bold mt-4";
+            }
+        };
+
+        const playIncomingAudio = (base64data) => {
+            if (isPlaying) return;
+            
+            isPlaying = true;
+            statusText.innerText = "Biri konuşuyor...";
+            statusText.className = "text-blue-400 font-bold mt-4";
+            
+            audioPlayer.src = base64data;
+            audioPlayer.play().catch(e => console.error("Çalma hatası:", e));
+            
+            audioPlayer.onended = () => {
+                isPlaying = false;
+                statusText.innerText = "Dinleniyor...";
+                statusText.className = "text-green-400 font-bold mt-4";
+            };
+        };
+
+        const startTalking = (e) => {
+            e.preventDefault();
+            if (!mediaRecorder || isRecording || isPlaying) return;
+            
+            isRecording = true;
+            pttBtn.classList.add('active');
+            statusText.innerText = "Konuşuyorsunuz...";
+            statusText.className = "text-red-400 font-bold mt-4";
+            audioChunks = [];
+            mediaRecorder.start();
+        };
+
+        const stopTalking = (e) => {
+            e.preventDefault();
+            if (!mediaRecorder || !isRecording) return;
+            
+            isRecording = false;
+            pttBtn.classList.remove('active');
+            mediaRecorder.stop();
+        };
+
+        pttBtn.addEventListener('mousedown', startTalking);
+        pttBtn.addEventListener('touchstart', startTalking, {passive: false});
+        
+        window.addEventListener('mouseup', stopTalking);
+        window.addEventListener('touchend', stopTalking, {passive: false});
+
+        leaveBtn.addEventListener('click', () => {
+            if (unsubscribeSnapshot) unsubscribeSnapshot();
+            radioScreen.classList.add('hidden');
+            loginScreen.classList.remove('hidden');
+        });
+    </script>
+
+    <div id="login-screen" class="flex-1 flex flex-col items-center justify-center p-6">
+        <div class="bg-gray-800 p-8 rounded-2xl shadow-2xl w-full max-w-sm text-center border border-gray-700">
+            <i class="fa-solid fa-walkie-talkie text-5xl text-blue-500 mb-4"></i>
+            <h1 class="text-2xl font-bold mb-6 text-white">Telsiz Frekansı</h1>
+            
+            <div class="mb-6">
+                <label class="block text-gray-400 text-sm mb-2">Bağlanmak istediğiniz kanal adı:</label>
+                <input type="text" id="channel-input" value="1. Kanal" 
+                       class="w-full bg-gray-900 border border-gray-600 rounded-lg p-3 text-center text-xl text-white focus:outline-none focus:border-blue-500 transition-colors"
+                       placeholder="Örn: ekip, genel, kanka">
+            </div>
+            
+            <button id="join-btn" disabled
+                    class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                Sistem Bekleniyor...
+            </button>
+            <p class="text-xs text-gray-500 mt-4">Kullanım için mikrofon izni gereklidir.</p>
+        </div>
+    </div>
+
+    <div id="radio-screen" class="hidden flex-1 flex flex-col bg-gray-900">
+        <div class="bg-gray-800 p-4 flex justify-between items-center border-b border-gray-700 shadow-lg">
+            <div id="current-channel" class="font-mono text-xl font-bold text-green-400">KANAL: --</div>
+            <button id="leave-btn" class="text-gray-400 hover:text-white px-3 py-1 rounded bg-gray-700">
+                <i class="fa-solid fa-power-off"></i> Çıkış
+            </button>
+        </div>
+
+        <div class="flex-1 flex flex-col items-center justify-center p-4">
+            <div class="flex flex-wrap justify-center w-32 mb-12 opacity-50">
+                <div class="speaker-hole"></div><div class="speaker-hole"></div><div class="speaker-hole"></div><div class="speaker-hole"></div>
+                <div class="speaker-hole"></div><div class="speaker-hole"></div><div class="speaker-hole"></div><div class="speaker-hole"></div>
+                <div class="speaker-hole"></div><div class="speaker-hole"></div><div class="speaker-hole"></div><div class="speaker-hole"></div>
+            </div>
+
+            <div class="relative w-48 h-48 flex items-center justify-center">
+                <button id="ptt-btn" class="ptt-btn w-40 h-40 rounded-full flex flex-col items-center justify-center select-none relative z-10 border-4 border-red-900 focus:outline-none">
+                    <div class="radar-ring"></div>
+                    <i class="fa-solid fa-microphone text-4xl mb-2 text-white shadow-sm"></i>
+                    <span class="font-bold text-sm tracking-wider uppercase">Bas Konuş</span>
+                </button>
+            </div>
+
+            <div class="mt-12 text-center h-16">
+                <div id="status-text" class="text-gray-500 font-bold mt-4 tracking-widest uppercase">Hazır</div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
