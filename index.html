@@ -16,6 +16,7 @@
         body { 
             background-color: #121212; 
             color: #ffffff; 
+            overscroll-behavior: none; /* iOS'ta sayfa kaymasını engeller */
         }
         .ptt-btn {
             background: linear-gradient(145deg, #ef4444, #dc2626);
@@ -57,7 +58,6 @@
             const statusText = document.getElementById('status-text');
             const micErrorText = document.getElementById('mic-error-text');
 
-            // Sabit kanal ayari (kodu kullanan herkes otomatik buraya baglanir)
             const FIXED_CHANNEL = "merkez_sabit_kanal_1"; 
             const currentTopic = "gtelsiz_v3_kanal_" + FIXED_CHANNEL;
 
@@ -68,19 +68,21 @@
             let isPlaying = false;
             let audioPlayer = new Audio();
             let audioUnlocked = false;
+            let activeMimeType = '';
             
             const myClientId = 'user_' + Math.random().toString(16).substr(2, 8);
 
-            // Telefonlarda ses calma kilidini ekrana ilk dokunusta aciyoruz
-            document.body.addEventListener('pointerdown', () => {
+            // iOS'ta ses çalma kilidini kırmak için ilk dokunuşta boş ses çal
+            const unlockAudio = () => {
                 if (!audioUnlocked) {
                     audioPlayer.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
                     audioPlayer.play().catch(()=>{});
                     audioUnlocked = true;
                 }
-            }, { once: true });
+            };
+            document.body.addEventListener('touchstart', unlockAudio, { once: true });
+            document.body.addEventListener('mousedown', unlockAudio, { once: true });
 
-            // Uygulama acilir acilmaz calisacak baglanti fonksiyonu
             const initRadio = async () => {
                 if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
                     micErrorText.innerHTML = "Güvenlik Hatası: URL'nin https:// ile başladığından emin olun.";
@@ -139,12 +141,19 @@
             };
 
             const setupMediaRecorder = (stream) => {
+                // Tarayıcıya göre en uygun formatı seç (Android için webm, iOS için mp4)
                 let options = {};
-                if (MediaRecorder.isTypeSupported('audio/webm')) {
-                    options = { mimeType: 'audio/webm' };
+                if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+                    activeMimeType = 'audio/webm;codecs=opus';
+                } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+                    activeMimeType = 'audio/webm';
                 } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
-                    options = { mimeType: 'audio/mp4' }; 
+                    activeMimeType = 'audio/mp4';
+                } else {
+                    activeMimeType = ''; // Tarayıcı kendi varsayılanını kullansın
                 }
+
+                if (activeMimeType) options.mimeType = activeMimeType;
                 
                 mediaRecorder = new MediaRecorder(stream, options);
                 
@@ -152,10 +161,12 @@
                     if (event.data.size > 0) audioChunks.push(event.data);
                 };
 
-                mediaRecorder.onstop = async () => {
+                mediaRecorder.onstop = () => {
                     if (audioChunks.length === 0) return;
                     
-                    const audioBlob = new Blob(audioChunks, { type: options.mimeType || 'audio/mp4' });
+                    // iOS uyumluluğu için Blob oluştururken asıl mimeType'ı zorla
+                    const blobType = mediaRecorder.mimeType || activeMimeType || 'audio/mp4';
+                    const audioBlob = new Blob(audioChunks, { type: blobType });
                     audioChunks = [];
                     
                     const reader = new FileReader();
@@ -196,6 +207,7 @@
                 
                 audioPlayer.src = base64data;
                 audioPlayer.play().catch(e => {
+                    console.log("Çalma hatası:", e);
                     isPlaying = false;
                     statusText.innerText = "Dinleniyor...";
                     statusText.className = "text-green-400 font-bold mt-4";
@@ -208,8 +220,11 @@
                 };
             };
 
+            // iOS ve Android için en sağlam dokunmatik olay yönetimi
             const startTalking = (e) => {
+                if (e.cancelable) e.preventDefault(); // Ekranın kaymasını ve çift tıklamayı önler
                 if (!mediaRecorder || isRecording || isPlaying) return;
+                
                 isRecording = true;
                 pttBtn.classList.add('active');
                 statusText.innerText = "Konuşuyorsunuz...";
@@ -219,22 +234,27 @@
             };
 
             const stopTalking = (e) => {
+                if (e && e.cancelable) e.preventDefault();
                 if (!mediaRecorder || !isRecording) return;
+                
                 isRecording = false;
                 pttBtn.classList.remove('active');
                 mediaRecorder.stop();
             };
 
-            pttBtn.addEventListener('pointerdown', startTalking);
-            window.addEventListener('pointerup', stopTalking);
-            pttBtn.addEventListener('pointercancel', stopTalking);
+            // Fare (Bilgisayar) için
+            pttBtn.addEventListener('mousedown', startTalking);
+            window.addEventListener('mouseup', stopTalking);
+            
+            // Dokunmatik Ekranlar (iOS ve Android) için
+            pttBtn.addEventListener('touchstart', startTalking, { passive: false });
+            window.addEventListener('touchend', stopTalking, { passive: false });
+            window.addEventListener('touchcancel', stopTalking, { passive: false });
 
-            // Uygulamayi baslat
             initRadio();
         });
     </script>
 
-    <!-- Ana Telsiz Ekrani -->
     <div id="radio-screen" class="flex-1 flex flex-col bg-gray-900">
         
         <!-- Üst Bilgi Cubugu -->
@@ -246,7 +266,6 @@
         </div>
 
         <div class="flex-1 flex flex-col items-center justify-center p-4">
-            <!-- Hata Mesaji Alani -->
             <p id="mic-error-text" class="hidden w-full max-w-sm text-center text-sm text-red-500 mb-8 font-bold bg-red-900/30 p-3 rounded border border-red-800"></p>
 
             <div class="flex flex-wrap justify-center w-32 mb-12 opacity-50">
