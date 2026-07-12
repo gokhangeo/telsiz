@@ -22,7 +22,7 @@
             box-shadow: 0 10px 20px rgba(239, 68, 68, 0.4), inset 0 -3px 0 rgba(0,0,0,0.2);
             transition: all 0.1s;
             cursor: pointer;
-            touch-action: none; /* Ekran kaymasını ve tıklama hatalarını engeller */
+            touch-action: none;
         }
         .ptt-btn.active {
             transform: translateY(5px);
@@ -53,71 +53,67 @@
 
     <script>
         document.addEventListener("DOMContentLoaded", () => {
-            const loginScreen = document.getElementById('login-screen');
-            const radioScreen = document.getElementById('radio-screen');
-            const channelInput = document.getElementById('channel-input');
-            const joinBtn = document.getElementById('join-btn');
             const pttBtn = document.getElementById('ptt-btn');
             const statusText = document.getElementById('status-text');
-            const currentChannelDisplay = document.getElementById('current-channel');
-            const leaveBtn = document.getElementById('leave-btn');
             const micErrorText = document.getElementById('mic-error-text');
 
+            // Sabit kanal ayari (kodu kullanan herkes otomatik buraya baglanir)
+            const FIXED_CHANNEL = "merkez_sabit_kanal_1"; 
+            const currentTopic = "gtelsiz_v3_kanal_" + FIXED_CHANNEL;
+
             let mqttClient = null;
-            let currentTopic = "";
             let mediaRecorder = null;
             let audioChunks = [];
             let isRecording = false;
             let isPlaying = false;
             let audioPlayer = new Audio();
+            let audioUnlocked = false;
             
             const myClientId = 'user_' + Math.random().toString(16).substr(2, 8);
 
-            joinBtn.addEventListener('click', async () => {
-                const channelName = channelInput.value.trim().toLowerCase() || 'genel';
-                micErrorText.classList.add('hidden');
-                
-                // Telefonlarda ses çalma kilidini açmak için boş ses çalma hilesi
-                audioPlayer.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
-                audioPlayer.play().catch(()=>{});
+            // Telefonlarda ses calma kilidini ekrana ilk dokunusta aciyoruz
+            document.body.addEventListener('pointerdown', () => {
+                if (!audioUnlocked) {
+                    audioPlayer.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
+                    audioPlayer.play().catch(()=>{});
+                    audioUnlocked = true;
+                }
+            }, { once: true });
 
+            // Uygulama acilir acilmaz calisacak baglanti fonksiyonu
+            const initRadio = async () => {
                 if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
                     micErrorText.innerHTML = "Güvenlik Hatası: URL'nin https:// ile başladığından emin olun.";
                     micErrorText.classList.remove('hidden');
+                    statusText.innerText = "Bağlantı Engellendi";
                     return;
                 }
 
                 if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
                     micErrorText.innerHTML = "Hata: Cihazınız veya tarayıcınız mikrofonu desteklemiyor.";
                     micErrorText.classList.remove('hidden');
+                    statusText.innerText = "Mikrofon Bulunamadı";
                     return;
                 }
 
                 try {
+                    statusText.innerText = "Mikrofon izni bekleniyor...";
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     setupMediaRecorder(stream);
-                    
-                    if ("Notification" in window && Notification.permission !== "granted") {
-                        Notification.requestPermission();
-                    }
-                    
-                    loginScreen.classList.add('hidden');
-                    radioScreen.classList.remove('hidden');
-                    currentChannelDisplay.innerText = "Kanal: " + channelName.toUpperCase();
-                    
-                    connectToChannel(channelName);
+                    connectToChannel();
                 } catch (error) {
                     micErrorText.innerHTML = "Mikrofon Hatası: İzin verilmedi veya mikrofon meşgul.";
                     micErrorText.classList.remove('hidden');
+                    statusText.innerText = "İzin Reddedildi";
+                    statusText.className = "text-red-500 font-bold mt-4";
                 }
-            });
+            };
 
-            const connectToChannel = (channelName) => {
-                statusText.innerText = "Bağlanıyor...";
+            const connectToChannel = () => {
+                statusText.innerText = "Sunucuya bağlanıyor...";
                 statusText.className = "text-yellow-400 font-bold mt-4";
                 
                 mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
-                currentTopic = "gtelsiz_v3_kanal_" + channelName.replace(/[^a-z0-9]/g, '');
 
                 mqttClient.on('connect', () => {
                     mqttClient.subscribe(currentTopic);
@@ -212,7 +208,6 @@
                 };
             };
 
-            // Modern Cihazlar İçin Pointer Olayları (PC, Android, iOS ortak)
             const startTalking = (e) => {
                 if (!mediaRecorder || isRecording || isPlaying) return;
                 isRecording = true;
@@ -234,49 +229,26 @@
             window.addEventListener('pointerup', stopTalking);
             pttBtn.addEventListener('pointercancel', stopTalking);
 
-            leaveBtn.addEventListener('click', () => {
-                if (mqttClient) mqttClient.end();
-                radioScreen.classList.add('hidden');
-                loginScreen.classList.remove('hidden');
-                
-                if (mediaRecorder && mediaRecorder.stream) {
-                    mediaRecorder.stream.getTracks().forEach(track => track.stop());
-                }
-            });
+            // Uygulamayi baslat
+            initRadio();
         });
     </script>
 
-    <div id="login-screen" class="flex-1 flex flex-col items-center justify-center p-6">
-        <div class="bg-gray-800 p-8 rounded-2xl shadow-2xl w-full max-w-sm text-center border border-gray-700">
-            <i class="fa-solid fa-walkie-talkie text-5xl text-blue-500 mb-4"></i>
-            <h1 class="text-2xl font-bold mb-6 text-white">Telsiz Frekansı</h1>
-            
-            <div class="mb-6">
-                <label class="block text-gray-400 text-sm mb-2">Bağlanmak istediğiniz kanal adı:</label>
-                <input type="text" id="channel-input" value="1. Kanal" 
-                       class="w-full bg-gray-900 border border-gray-600 rounded-lg p-3 text-center text-xl text-white focus:outline-none focus:border-blue-500 transition-colors"
-                       placeholder="Örn: ekip, genel, kanka">
-            </div>
-            
-            <button id="join-btn"
-                 class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-xl transition-colors select-none">
-                Kanala Bağlan
-            </button>
-            
-            <p id="mic-error-text" class="hidden text-sm text-red-500 mt-4 font-bold bg-red-900/30 p-2 rounded"></p>
-            <p class="text-xs text-gray-500 mt-4">Kullanım için mikrofon izni gereklidir.</p>
-        </div>
-    </div>
-
-    <div id="radio-screen" class="hidden flex-1 flex flex-col bg-gray-900">
+    <!-- Ana Telsiz Ekrani -->
+    <div id="radio-screen" class="flex-1 flex flex-col bg-gray-900">
+        
+        <!-- Üst Bilgi Cubugu -->
         <div class="bg-gray-800 p-4 flex justify-between items-center border-b border-gray-700 shadow-lg">
-            <div id="current-channel" class="font-mono text-xl font-bold text-green-400">KANAL: --</div>
-            <button id="leave-btn" class="text-gray-400 hover:text-white px-3 py-1 rounded bg-gray-700 cursor-pointer">
-                <i class="fa-solid fa-power-off"></i> Çıkış
-            </button>
+            <div class="font-mono text-xl font-bold text-green-400">
+                <i class="fa-solid fa-signal mr-2"></i> MERKEZ KANAL
+            </div>
+            <div class="text-xs text-gray-500">Güvenli Hat</div>
         </div>
 
         <div class="flex-1 flex flex-col items-center justify-center p-4">
+            <!-- Hata Mesaji Alani -->
+            <p id="mic-error-text" class="hidden w-full max-w-sm text-center text-sm text-red-500 mb-8 font-bold bg-red-900/30 p-3 rounded border border-red-800"></p>
+
             <div class="flex flex-wrap justify-center w-32 mb-12 opacity-50">
                 <div class="speaker-hole"></div><div class="speaker-hole"></div><div class="speaker-hole"></div><div class="speaker-hole"></div>
                 <div class="speaker-hole"></div><div class="speaker-hole"></div><div class="speaker-hole"></div><div class="speaker-hole"></div>
@@ -292,7 +264,7 @@
             </div>
 
             <div class="mt-12 text-center h-16">
-                <div id="status-text" class="text-gray-500 font-bold mt-4 tracking-widest uppercase">Hazır</div>
+                <div id="status-text" class="text-gray-500 font-bold mt-4 tracking-widest uppercase">Başlatılıyor...</div>
             </div>
         </div>
     </div>
