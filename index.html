@@ -6,7 +6,6 @@
     <title>Anlık Telsiz</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <!-- MQTT kütüphanesini Canvas dışı ortamlar için tutuyoruz -->
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
         * { -webkit-tap-highlight-color: transparent; user-select: none; }
@@ -28,34 +27,32 @@
             const FIXED_CHANNEL = "merkez_sabit_kanal_1"; 
             const currentTopic = "gtelsiz_v3_kanal_" + FIXED_CHANNEL;
             
-            let mqttClient = null, mediaRecorder = null, audioChunks = [], isRecording = false;
+            let mqttClient = null, mediaRecorder = null, audioChunks = [];
             let audioPlayer = new Audio();
 
-            // Güvenlik kısıtlamalarını aşmak için bağlantı simülasyonu
             const connectMQTT = () => {
                 try {
-                    // Sadece Canvas dışındaysak (gerçek tarayıcıdaysak) bağlan
-                    if (window.location.hostname !== "") {
-                        mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
-                        mqttClient.on('connect', () => {
-                            mqttClient.subscribe(currentTopic);
-                            statusText.innerText = "Dinleniyor...";
-                        });
-                    } else {
-                        statusText.innerText = "Yerel Mod: Sunucu bağlantısı pasif.";
-                    }
+                    statusText.innerText = "Bağlanıyor...";
+                    mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
+                    
+                    mqttClient.on('connect', () => {
+                        mqttClient.subscribe(currentTopic);
+                        statusText.innerText = "Bağlantı Başarılı";
+                    });
+
+                    mqttClient.on('error', (err) => {
+                        statusText.innerText = "Bağlantı Hatası";
+                    });
                 } catch (e) {
-                    statusText.innerText = "Bağlantı Hatası: Simülasyon modunda devam ediliyor.";
+                    statusText.innerText = "Bağlantı Hatası";
                 }
             };
 
-            // İlk dokunuşta ses kilidini aç
             document.body.addEventListener('pointerdown', () => {
                 audioPlayer.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
                 audioPlayer.play().catch(()=>{});
             }, { once: true });
 
-            // Bas-Konuş Olayları
             pttBtn.addEventListener('pointerdown', (e) => {
                 e.preventDefault();
                 pttBtn.classList.add('active');
@@ -63,7 +60,7 @@
                     mediaRecorder = new MediaRecorder(stream);
                     mediaRecorder.start();
                     mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
-                }).catch(err => console.log("Mikrofon izni gerekli"));
+                }).catch(err => statusText.innerText = "Mikrofon izni gerekli");
             });
 
             pttBtn.addEventListener('pointerup', (e) => {
