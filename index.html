@@ -9,13 +9,25 @@
     <!-- Hesap gerektirmeyen anlık haberleşme kütüphanesi -->
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
-        body { background-color: #121212; color: #ffffff; touch-action: manipulation; }
+        /* iOS Safari Dokunmatik Tıklama Engellerini Kaldırma (Çok Önemli) */
+        * {
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        body { 
+            background-color: #121212; 
+            color: #ffffff; 
+            touch-action: manipulation; /* Çift tıklama yakınlaştırmasını önler */
+        }
         .ptt-btn {
             background: linear-gradient(145deg, #ef4444, #dc2626);
             box-shadow: 0 10px 20px rgba(239, 68, 68, 0.4), inset 0 -3px 0 rgba(0,0,0,0.2);
             transition: all 0.1s;
+            cursor: pointer; /* iOS'un bunu tıklanabilir görmesi için şart */
         }
-        .ptt-btn:active, .ptt-btn.active {
+        /* iOS'ta basılı tutulduğunda (active) stili */
+        .ptt-btn.active {
             transform: translateY(5px);
             box-shadow: 0 5px 10px rgba(239, 68, 68, 0.4), inset 0 3px 0 rgba(0,0,0,0.2);
             background: linear-gradient(145deg, #dc2626, #b91c1c);
@@ -39,25 +51,6 @@
             box-shadow: inset 1px 1px 2px rgba(0,0,0,0.8);
         }
     </style>
-    
-    <script>
-        const manifest = {
-            "name": "Anlık Telsiz",
-            "short_name": "Telsiz",
-            "start_url": ".",
-            "display": "standalone",
-            "background_color": "#121212",
-            "theme_color": "#ef4444",
-            "icons": [{
-                "src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZWY0NDQ0IiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTQuOSA5LjFhMTAuNCAxMC40IDAgMCAxIDE0LjIgMG0tMTEuNCAyLjhhNi40IDYuNCAwIDAgMSA4LjYgMG0tNS43IDIuOGEyLjQgMi40IDAgMCAxIDIuOCAwIi8+PHBhdGggZD0iTTEyIDIwaC4wMSIvPjwvc3ZnPg==",
-                "sizes": "512x512",
-                "type": "image/svg+xml",
-                "purpose": "any maskable"
-            }]
-        };
-        const manifestUrl = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(manifest));
-        document.write(`<link rel="manifest" href="${manifestUrl}">`);
-    </script>
 </head>
 <body class="flex flex-col h-screen overflow-hidden antialiased">
 
@@ -83,19 +76,39 @@
             
             // Kullaniciya ozel rastgele kimlik
             const myClientId = 'user_' + Math.random().toString(16).substr(2, 8);
+            
+            // iOS mu Android/PC mi kontrolü
+            const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 
-            joinBtn.addEventListener('click', async () => {
+            // iOS Safari click sorununu çözen ana tıklama olayı
+            joinBtn.addEventListener('click', async (e) => {
+                e.preventDefault(); // iOS çift tıklama sorununu çözer
+                
                 const channelName = channelInput.value.trim().toLowerCase() || 'genel';
                 micErrorText.classList.add('hidden');
                 
+                // Güvenlik: https veya localhost kontrolü (iOS sıkıdır bu konuda)
+                if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+                    micErrorText.innerHTML = "🚨 <b>Güvenlik Hatası:</b> Mikrofon sadece HTTPS üzerinden çalışır. GitHub sayfanızın URL'sinde https:// yazdığından emin olun.";
+                    micErrorText.classList.remove('hidden');
+                    return;
+                }
+
                 if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                    micErrorText.innerHTML = "🚨 <b>Hata:</b> Tarayıcınız mikrofon erişimini engelliyor.";
+                    micErrorText.innerHTML = "🚨 <b>Hata:</b> Cihazınız mikrofon kullanımını desteklemiyor veya izin reddedildi.";
                     micErrorText.classList.remove('hidden');
                     return;
                 }
 
                 try {
-                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    // Mikrofon iznini iste
+                    const stream = await navigator.mediaDevices.getUserMedia({ 
+                        audio: { 
+                            echoCancellation: true, // Telsizdeki yankıyı keser
+                            noiseSuppression: true 
+                        } 
+                    });
+                    
                     setupMediaRecorder(stream);
                     
                     if ("Notification" in window && Notification.permission !== "granted") {
@@ -108,18 +121,18 @@
                     
                     connectToChannel(channelName);
                 } catch (error) {
-                    micErrorText.innerText = "Mikrofon izni alınamadı! Lütfen tarayıcı ayarlarından izin verin.";
+                    micErrorText.innerHTML = "<b>Mikrofon Hatası:</b> İzin verilmedi veya mikrofon kullanılamıyor. (iOS'ta Ayarlar -> Safari -> Mikrofon kısmını kontrol edin)";
                     micErrorText.classList.remove('hidden');
                 }
             });
 
             const connectToChannel = (channelName) => {
-                statusText.innerText = "Sunucuya bağlanıyor...";
+                statusText.innerText = "Bağlanıyor...";
                 statusText.className = "text-yellow-400 font-bold mt-4";
                 
                 // Ücretsiz, halka açık haberleşme sunucusu
                 mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
-                currentTopic = "gtelsiz_kanal_" + channelName.replace(/[^a-z0-9]/g, '');
+                currentTopic = "gtelsiz_v2_kanal_" + channelName.replace(/[^a-z0-9]/g, '');
 
                 mqttClient.on('connect', () => {
                     mqttClient.subscribe(currentTopic);
@@ -134,10 +147,6 @@
                             // Kendi sesimi yankılamaması için kontrol
                             if (data.senderId !== myClientId && data.audioBase64) {
                                 playIncomingAudio(data.audioBase64);
-                                
-                                if (document.hidden && "Notification" in window && Notification.permission === "granted") {
-                                    new Notification("Telsiz", { body: "Kanaldan ses geldi!" });
-                                }
                             }
                         } catch(e) {}
                     }
@@ -150,7 +159,16 @@
             };
 
             const setupMediaRecorder = (stream) => {
-                mediaRecorder = new MediaRecorder(stream);
+                // iOS ve Android format uyumluluğu kontrolü
+                let options = {};
+                // Eğer iOS ise varsayılan mp4'ü, değilse webm'i kullan (boyut/hız için)
+                if (MediaRecorder.isTypeSupported('audio/webm')) {
+                    options = { mimeType: 'audio/webm' };
+                } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+                    options = { mimeType: 'audio/mp4' }; // iOS Safari
+                }
+                
+                mediaRecorder = new MediaRecorder(stream, options);
                 
                 mediaRecorder.ondataavailable = (event) => {
                     if (event.data.size > 0) audioChunks.push(event.data);
@@ -159,7 +177,7 @@
                 mediaRecorder.onstop = async () => {
                     if (audioChunks.length === 0) return;
                     
-                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    const audioBlob = new Blob(audioChunks, { type: options.mimeType || 'audio/mp4' });
                     audioChunks = [];
                     
                     const reader = new FileReader();
@@ -199,7 +217,13 @@
                 statusText.className = "text-blue-400 font-bold mt-4";
                 
                 audioPlayer.src = base64data;
-                audioPlayer.play().catch(e => console.error("Çalma hatası", e));
+                audioPlayer.play().catch(e => {
+                    console.error("Çalma hatası", e);
+                    // iOS'ta sessiz mod engeli hatası
+                    isPlaying = false;
+                    statusText.innerText = "Dinleniyor...";
+                    statusText.className = "text-green-400 font-bold mt-4";
+                });
                 
                 audioPlayer.onended = () => {
                     isPlaying = false;
@@ -208,8 +232,9 @@
                 };
             };
 
+            // --- Bas Konuş Butonu Olayları (iOS Uyumlu) ---
             const startTalking = (e) => {
-                e.preventDefault();
+                if (e.type === 'touchstart') e.preventDefault(); // Ekran kaymasını önle
                 if (!mediaRecorder || isRecording || isPlaying) return;
                 
                 isRecording = true;
@@ -221,7 +246,7 @@
             };
 
             const stopTalking = (e) => {
-                e.preventDefault();
+                if (e && e.type === 'touchend') e.preventDefault();
                 if (!mediaRecorder || !isRecording) return;
                 
                 isRecording = false;
@@ -229,12 +254,17 @@
                 mediaRecorder.stop();
             };
 
+            // Fare (PC) Olayları
             pttBtn.addEventListener('mousedown', startTalking);
-            pttBtn.addEventListener('touchstart', startTalking, {passive: false});
             window.addEventListener('mouseup', stopTalking);
-            window.addEventListener('touchend', stopTalking, {passive: false});
+            
+            // Dokunmatik (Mobil/iOS) Olayları
+            pttBtn.addEventListener('touchstart', startTalking, { passive: false });
+            window.addEventListener('touchend', stopTalking, { passive: false });
+            pttBtn.addEventListener('touchcancel', stopTalking); // Ekrandan parmak dışarı kayarsa
 
-            leaveBtn.addEventListener('click', () => {
+            leaveBtn.addEventListener('click', (e) => {
+                e.preventDefault();
                 if (mqttClient) mqttClient.end();
                 radioScreen.classList.add('hidden');
                 loginScreen.classList.remove('hidden');
@@ -253,15 +283,17 @@
             
             <div class="mb-6">
                 <label class="block text-gray-400 text-sm mb-2">Bağlanmak istediğiniz kanal adı:</label>
+                <!-- onkeydown eklendi: mobilde enter'a basınca tetiklesin diye -->
                 <input type="text" id="channel-input" value="1. Kanal" 
                        class="w-full bg-gray-900 border border-gray-600 rounded-lg p-3 text-center text-xl text-white focus:outline-none focus:border-blue-500 transition-colors"
                        placeholder="Örn: ekip, genel, kanka">
             </div>
             
-            <button id="join-btn"
-                    class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-xl transition-colors">
+            <!-- div tag'ine çevirdim çünkü iOS Safari form içindeki button elementlerini bazen gıcık algılayabiliyor -->
+            <div id="join-btn"
+                 class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-xl transition-colors cursor-pointer select-none">
                 Kanala Bağlan
-            </button>
+            </div>
             
             <p id="mic-error-text" class="hidden text-sm text-red-500 mt-4 font-bold bg-red-900/30 p-2 rounded"></p>
             <p class="text-xs text-gray-500 mt-4">Kullanım için mikrofon izni gereklidir.</p>
@@ -271,9 +303,9 @@
     <div id="radio-screen" class="hidden flex-1 flex flex-col bg-gray-900">
         <div class="bg-gray-800 p-4 flex justify-between items-center border-b border-gray-700 shadow-lg">
             <div id="current-channel" class="font-mono text-xl font-bold text-green-400">KANAL: --</div>
-            <button id="leave-btn" class="text-gray-400 hover:text-white px-3 py-1 rounded bg-gray-700">
+            <div id="leave-btn" class="text-gray-400 hover:text-white px-3 py-1 rounded bg-gray-700 cursor-pointer">
                 <i class="fa-solid fa-power-off"></i> Çıkış
-            </button>
+            </div>
         </div>
 
         <div class="flex-1 flex flex-col items-center justify-center p-4">
@@ -284,11 +316,12 @@
             </div>
 
             <div class="relative w-48 h-48 flex items-center justify-center">
-                <button id="ptt-btn" class="ptt-btn w-40 h-40 rounded-full flex flex-col items-center justify-center select-none relative z-10 border-4 border-red-900 focus:outline-none">
+                <!-- iOS Safari için button yerine div kullandık ve dokunmatik olaylarını güçlendirdik -->
+                <div id="ptt-btn" class="ptt-btn w-40 h-40 rounded-full flex flex-col items-center justify-center select-none relative z-10 border-4 border-red-900 focus:outline-none">
                     <div class="radar-ring"></div>
                     <i class="fa-solid fa-microphone text-4xl mb-2 text-white shadow-sm"></i>
                     <span class="font-bold text-sm tracking-wider uppercase">Bas Konuş</span>
-                </button>
+                </div>
             </div>
 
             <div class="mt-12 text-center h-16">
