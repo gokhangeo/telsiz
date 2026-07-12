@@ -54,12 +54,8 @@
                 "purpose": "any maskable"
             }]
         };
-        // Hataları önlemek için blob URL yerine data URI kullanıyoruz
         const manifestUrl = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(manifest));
         document.write(`<link rel="manifest" href="${manifestUrl}">`);
-        
-        // Not: Gerçek bir PWA Service Worker kaydı için ayrı bir "sw.js" dosyasına ihtiyaç vardır.
-        // Tek dosya (Single-file) kısıtlamasından dolayı blob tabanlı Service Worker kaydı kaldırılmıştır.
     </script>
 </head>
 <body class="flex flex-col h-screen overflow-hidden antialiased">
@@ -93,6 +89,7 @@
         const statusText = document.getElementById('status-text');
         const currentChannelDisplay = document.getElementById('current-channel');
         const leaveBtn = document.getElementById('leave-btn');
+        const micErrorText = document.getElementById('mic-error-text');
 
         const initAuth = async () => {
             try {
@@ -102,8 +99,8 @@
                     await signInAnonymously(auth);
                 }
             } catch (error) {
-                statusText.innerText = "Bağlantı hatası!";
-                statusText.className = "text-red-500 font-bold mt-4";
+                micErrorText.innerText = "Sunucu bağlantı hatası!";
+                micErrorText.classList.remove('hidden');
             }
         };
         initAuth();
@@ -118,8 +115,10 @@
 
         joinBtn.addEventListener('click', async () => {
             const channelName = channelInput.value.trim().toLowerCase() || 'genel';
+            micErrorText.classList.add('hidden'); // Önceki hataları gizle
             
             try {
+                // Mikrofon izni iste
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 setupMediaRecorder(stream);
                 
@@ -134,7 +133,10 @@
                 
                 joinChannel(channelName);
             } catch (error) {
-                alert("Telsizi kullanmak için mikrofon izni vermeniz gerekiyor.");
+                console.error("Mikrofon hatası:", error);
+                // Tarayıcı uyarısı yerine ekranda hata göster
+                micErrorText.innerText = "Mikrofon izni alınamadı! Lütfen tarayıcı ayarlarından mikrofona izin verin.";
+                micErrorText.classList.remove('hidden');
             }
         });
 
@@ -261,6 +263,11 @@
             if (unsubscribeSnapshot) unsubscribeSnapshot();
             radioScreen.classList.add('hidden');
             loginScreen.classList.remove('hidden');
+            
+            // Çıkış yapınca kamerayı/mikrofonu serbest bırak
+            if (mediaRecorder && mediaRecorder.stream) {
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            }
         });
     </script>
 
@@ -280,6 +287,10 @@
                     class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                 Sistem Bekleniyor...
             </button>
+            
+            <!-- Mikrofon Hata Mesajı Alanı -->
+            <p id="mic-error-text" class="hidden text-sm text-red-500 mt-4 font-bold bg-red-900/30 p-2 rounded"></p>
+            
             <p class="text-xs text-gray-500 mt-4">Kullanım için mikrofon izni gereklidir.</p>
         </div>
     </div>
