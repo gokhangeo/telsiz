@@ -6,6 +6,8 @@
     <title>Anlık Telsiz</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <!-- Hesap gerektirmeyen anlık haberleşme kütüphanesi -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
         body { background-color: #121212; color: #ffffff; touch-action: manipulation; }
         .ptt-btn {
@@ -38,7 +40,6 @@
         }
     </style>
     
-    <!-- Uygulama Olarak Yüklenebilme (PWA) Ayarları -->
     <script>
         const manifest = {
             "name": "Anlık Telsiz",
@@ -60,221 +61,188 @@
 </head>
 <body class="flex flex-col h-screen overflow-hidden antialiased">
 
-    <!-- Firebase Kütüphaneleri -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            const loginScreen = document.getElementById('login-screen');
+            const radioScreen = document.getElementById('radio-screen');
+            const channelInput = document.getElementById('channel-input');
+            const joinBtn = document.getElementById('join-btn');
+            const pttBtn = document.getElementById('ptt-btn');
+            const statusText = document.getElementById('status-text');
+            const currentChannelDisplay = document.getElementById('current-channel');
+            const leaveBtn = document.getElementById('leave-btn');
+            const micErrorText = document.getElementById('mic-error-text');
 
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            let mqttClient = null;
+            let currentTopic = "";
+            let mediaRecorder = null;
+            let audioChunks = [];
+            let isRecording = false;
+            let isPlaying = false;
+            let audioPlayer = new Audio();
+            
+            // Kullaniciya ozel rastgele kimlik
+            const myClientId = 'user_' + Math.random().toString(16).substr(2, 8);
 
-        let currentUser = null;
-        let mediaRecorder = null;
-        let audioChunks = [];
-        let unsubscribeSnapshot = null;
-        let joinTime = Date.now();
-        let isRecording = false;
-        let isPlaying = false;
-        let audioPlayer = new Audio();
-
-        const loginScreen = document.getElementById('login-screen');
-        const radioScreen = document.getElementById('radio-screen');
-        const channelInput = document.getElementById('channel-input');
-        const joinBtn = document.getElementById('join-btn');
-        const pttBtn = document.getElementById('ptt-btn');
-        const statusText = document.getElementById('status-text');
-        const currentChannelDisplay = document.getElementById('current-channel');
-        const leaveBtn = document.getElementById('leave-btn');
-        const micErrorText = document.getElementById('mic-error-text');
-
-        const initAuth = async () => {
-            try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
+            joinBtn.addEventListener('click', async () => {
+                const channelName = channelInput.value.trim().toLowerCase() || 'genel';
+                micErrorText.classList.add('hidden');
+                
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    micErrorText.innerHTML = "🚨 <b>Hata:</b> Tarayıcınız mikrofon erişimini engelliyor.";
+                    micErrorText.classList.remove('hidden');
+                    return;
                 }
-            } catch (error) {
-                micErrorText.innerText = "Sunucu bağlantı hatası!";
-                micErrorText.classList.remove('hidden');
-            }
-        };
-        initAuth();
 
-        onAuthStateChanged(auth, (user) => {
-            if (user) {
-                currentUser = user;
-                joinBtn.disabled = false;
-                joinBtn.innerText = "Kanala Bağlan";
-            }
-        });
-
-        joinBtn.addEventListener('click', async () => {
-            const channelName = channelInput.value.trim().toLowerCase() || 'genel';
-            micErrorText.classList.add('hidden'); // Önceki hataları gizle
-            
-            // GÜVENLİK KONTROLÜ (HTTPS ŞART)
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                micErrorText.innerHTML = "🚨 <b>Güvenlik Engeli:</b> Tarayıcılar mikrofonu sadece internete yüklü (HTTPS) sitelerde açar. Dosyayı telefonda doğrudan açtığınız için sistem mikrofonu engelledi. Çalışması için internete yüklenmesi gerekir.";
-                micErrorText.classList.remove('hidden');
-                return;
-            }
-
-            try {
-                // Mikrofon izni iste
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                setupMediaRecorder(stream);
-                
-                // Bildirim izni iste
-                if ("Notification" in window && Notification.permission !== "granted") {
-                    Notification.requestPermission();
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    setupMediaRecorder(stream);
+                    
+                    if ("Notification" in window && Notification.permission !== "granted") {
+                        Notification.requestPermission();
+                    }
+                    
+                    loginScreen.classList.add('hidden');
+                    radioScreen.classList.remove('hidden');
+                    currentChannelDisplay.innerText = "Kanal: " + channelName.toUpperCase();
+                    
+                    connectToChannel(channelName);
+                } catch (error) {
+                    micErrorText.innerText = "Mikrofon izni alınamadı! Lütfen tarayıcı ayarlarından izin verin.";
+                    micErrorText.classList.remove('hidden');
                 }
-                
-                loginScreen.classList.add('hidden');
-                radioScreen.classList.remove('hidden');
-                currentChannelDisplay.innerText = "Kanal: " + channelName.toUpperCase();
-                
-                joinChannel(channelName);
-            } catch (error) {
-                console.error("Mikrofon hatası:", error);
-                // Tarayıcı uyarısı yerine ekranda hata göster
-                micErrorText.innerText = "Mikrofon izni alınamadı! Lütfen tarayıcı ayarlarından mikrofona izin verin.";
-                micErrorText.classList.remove('hidden');
-            }
-        });
+            });
 
-        const joinChannel = (channelName) => {
-            if (unsubscribeSnapshot) unsubscribeSnapshot();
-            
-            joinTime = Date.now();
-            const safeChannelName = "channel_" + channelName.replace(/[^a-z0-9]/g, '');
-            const channelRef = collection(db, 'artifacts', appId, 'public', 'data', safeChannelName);
-            
-            statusText.innerText = "Dinleniyor...";
-            statusText.className = "text-green-400 font-bold mt-4";
+            const connectToChannel = (channelName) => {
+                statusText.innerText = "Sunucuya bağlanıyor...";
+                statusText.className = "text-yellow-400 font-bold mt-4";
+                
+                // Ücretsiz, halka açık haberleşme sunucusu
+                mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
+                currentTopic = "gtelsiz_kanal_" + channelName.replace(/[^a-z0-9]/g, '');
 
-            unsubscribeSnapshot = onSnapshot(channelRef, (snapshot) => {
-                snapshot.docChanges().forEach((change) => {
-                    if (change.type === 'added') {
-                        const data = change.doc.data();
-                        if (data.timestamp > joinTime && data.senderId !== currentUser.uid) {
-                            playIncomingAudio(data.audioBase64);
-                            
-                            // Arka plandayken bildirim gönder
-                            if (document.hidden && "Notification" in window && Notification.permission === "granted") {
-                                new Notification("Telsiz Anonsu", {
-                                    body: "Kanaldan yeni bir sesli mesaj geldi!",
-                                });
+                mqttClient.on('connect', () => {
+                    mqttClient.subscribe(currentTopic);
+                    statusText.innerText = "Dinleniyor...";
+                    statusText.className = "text-green-400 font-bold mt-4";
+                });
+
+                mqttClient.on('message', (topic, message) => {
+                    if (topic === currentTopic) {
+                        try {
+                            const data = JSON.parse(message.toString());
+                            // Kendi sesimi yankılamaması için kontrol
+                            if (data.senderId !== myClientId && data.audioBase64) {
+                                playIncomingAudio(data.audioBase64);
+                                
+                                if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+                                    new Notification("Telsiz", { body: "Kanaldan ses geldi!" });
+                                }
                             }
-                        }
+                        } catch(e) {}
                     }
                 });
-            });
-        };
 
-        const setupMediaRecorder = (stream) => {
-            mediaRecorder = new MediaRecorder(stream);
-            
-            mediaRecorder.ondataavailable = (event) => {
-                if (event.data.size > 0) audioChunks.push(event.data);
+                mqttClient.on('error', () => {
+                    statusText.innerText = "Bağlantı koptu!";
+                    statusText.className = "text-red-500 font-bold mt-4";
+                });
             };
 
-            mediaRecorder.onstop = async () => {
-                if (audioChunks.length === 0) return;
+            const setupMediaRecorder = (stream) => {
+                mediaRecorder = new MediaRecorder(stream);
                 
-                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-                audioChunks = [];
-                
-                const reader = new FileReader();
-                reader.readAsDataURL(audioBlob);
-                reader.onloadend = async () => {
-                    await sendAudioData(reader.result);
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    if (audioChunks.length === 0) return;
+                    
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    audioChunks = [];
+                    
+                    const reader = new FileReader();
+                    reader.readAsDataURL(audioBlob);
+                    reader.onloadend = () => {
+                        sendAudioData(reader.result);
+                    };
                 };
             };
-        };
 
-        const sendAudioData = async (base64data) => {
-            if (!currentUser) return;
-            
-            const channelName = channelInput.value.trim().toLowerCase() || 'genel';
-            const safeChannelName = "channel_" + channelName.replace(/[^a-z0-9]/g, '');
-            const channelRef = collection(db, 'artifacts', appId, 'public', 'data', safeChannelName);
-            
-            try {
+            const sendAudioData = (base64data) => {
+                if (!mqttClient || !mqttClient.connected) {
+                    statusText.innerText = "Bağlantı yok!";
+                    statusText.className = "text-red-500 font-bold mt-4";
+                    return;
+                }
+                
                 statusText.innerText = "Gönderiliyor...";
                 statusText.className = "text-yellow-400 font-bold mt-4";
                 
-                await addDoc(channelRef, {
-                    senderId: currentUser.uid,
-                    audioBase64: base64data,
-                    timestamp: Date.now()
+                const payload = JSON.stringify({
+                    senderId: myClientId,
+                    audioBase64: base64data
                 });
-                
-                statusText.innerText = "Dinleniyor...";
-                statusText.className = "text-green-400 font-bold mt-4";
-            } catch (error) {
-                statusText.innerText = "Gönderilemedi!";
-                statusText.className = "text-red-500 font-bold mt-4";
-            }
-        };
 
-        const playIncomingAudio = (base64data) => {
-            if (isPlaying) return;
-            
-            isPlaying = true;
-            statusText.innerText = "Biri konuşuyor...";
-            statusText.className = "text-blue-400 font-bold mt-4";
-            
-            audioPlayer.src = base64data;
-            audioPlayer.play().catch(e => console.error("Çalma hatası:", e));
-            
-            audioPlayer.onended = () => {
-                isPlaying = false;
-                statusText.innerText = "Dinleniyor...";
-                statusText.className = "text-green-400 font-bold mt-4";
+                mqttClient.publish(currentTopic, payload, () => {
+                    statusText.innerText = "Dinleniyor...";
+                    statusText.className = "text-green-400 font-bold mt-4";
+                });
             };
-        };
 
-        const startTalking = (e) => {
-            e.preventDefault();
-            if (!mediaRecorder || isRecording || isPlaying) return;
-            
-            isRecording = true;
-            pttBtn.classList.add('active');
-            statusText.innerText = "Konuşuyorsunuz...";
-            statusText.className = "text-red-400 font-bold mt-4";
-            audioChunks = [];
-            mediaRecorder.start();
-        };
+            const playIncomingAudio = (base64data) => {
+                if (isPlaying) return;
+                
+                isPlaying = true;
+                statusText.innerText = "Biri konuşuyor...";
+                statusText.className = "text-blue-400 font-bold mt-4";
+                
+                audioPlayer.src = base64data;
+                audioPlayer.play().catch(e => console.error("Çalma hatası", e));
+                
+                audioPlayer.onended = () => {
+                    isPlaying = false;
+                    statusText.innerText = "Dinleniyor...";
+                    statusText.className = "text-green-400 font-bold mt-4";
+                };
+            };
 
-        const stopTalking = (e) => {
-            e.preventDefault();
-            if (!mediaRecorder || !isRecording) return;
-            
-            isRecording = false;
-            pttBtn.classList.remove('active');
-            mediaRecorder.stop();
-        };
+            const startTalking = (e) => {
+                e.preventDefault();
+                if (!mediaRecorder || isRecording || isPlaying) return;
+                
+                isRecording = true;
+                pttBtn.classList.add('active');
+                statusText.innerText = "Konuşuyorsunuz...";
+                statusText.className = "text-red-400 font-bold mt-4";
+                audioChunks = [];
+                mediaRecorder.start();
+            };
 
-        pttBtn.addEventListener('mousedown', startTalking);
-        pttBtn.addEventListener('touchstart', startTalking, {passive: false});
-        
-        window.addEventListener('mouseup', stopTalking);
-        window.addEventListener('touchend', stopTalking, {passive: false});
+            const stopTalking = (e) => {
+                e.preventDefault();
+                if (!mediaRecorder || !isRecording) return;
+                
+                isRecording = false;
+                pttBtn.classList.remove('active');
+                mediaRecorder.stop();
+            };
 
-        leaveBtn.addEventListener('click', () => {
-            if (unsubscribeSnapshot) unsubscribeSnapshot();
-            radioScreen.classList.add('hidden');
-            loginScreen.classList.remove('hidden');
-            
-            // Çıkış yapınca kamerayı/mikrofonu serbest bırak
-            if (mediaRecorder && mediaRecorder.stream) {
-                mediaRecorder.stream.getTracks().forEach(track => track.stop());
-            }
+            pttBtn.addEventListener('mousedown', startTalking);
+            pttBtn.addEventListener('touchstart', startTalking, {passive: false});
+            window.addEventListener('mouseup', stopTalking);
+            window.addEventListener('touchend', stopTalking, {passive: false});
+
+            leaveBtn.addEventListener('click', () => {
+                if (mqttClient) mqttClient.end();
+                radioScreen.classList.add('hidden');
+                loginScreen.classList.remove('hidden');
+                
+                if (mediaRecorder && mediaRecorder.stream) {
+                    mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                }
+            });
         });
     </script>
 
@@ -290,14 +258,12 @@
                        placeholder="Örn: ekip, genel, kanka">
             </div>
             
-            <button id="join-btn" disabled
-                    class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                Sistem Bekleniyor...
+            <button id="join-btn"
+                    class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-xl transition-colors">
+                Kanala Bağlan
             </button>
             
-            <!-- Mikrofon Hata Mesajı Alanı -->
             <p id="mic-error-text" class="hidden text-sm text-red-500 mt-4 font-bold bg-red-900/30 p-2 rounded"></p>
-            
             <p class="text-xs text-gray-500 mt-4">Kullanım için mikrofon izni gereklidir.</p>
         </div>
     </div>
