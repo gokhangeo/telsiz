@@ -8,14 +8,46 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
-        * { -webkit-tap-highlight-color: transparent; user-select: none; }
-        body { background-color: #121212; color: #ffffff; overscroll-behavior: none; }
-        .ptt-btn { background: linear-gradient(145deg, #ef4444, #dc2626); box-shadow: 0 10px 20px rgba(239, 68, 68, 0.4), inset 0 -3px 0 rgba(0,0,0,0.2); transition: all 0.1s; cursor: pointer; touch-action: none; }
-        .ptt-btn.active { transform: translateY(5px); box-shadow: 0 5px 10px rgba(239, 68, 68, 0.4), inset 0 3px 0 rgba(0,0,0,0.2); background: linear-gradient(145deg, #dc2626, #b91c1c); }
-        .radar-ring { position: absolute; width: 100%; height: 100%; border-radius: 50%; border: 2px solid #ef4444; animation: radar 1.5s infinite ease-out; opacity: 0; display: none; }
+        * {
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        body { 
+            background-color: #121212; 
+            color: #ffffff; 
+            overscroll-behavior: none; /* iOS'ta sayfa kaymasını engeller */
+        }
+        .ptt-btn {
+            background: linear-gradient(145deg, #ef4444, #dc2626);
+            box-shadow: 0 10px 20px rgba(239, 68, 68, 0.4), inset 0 -3px 0 rgba(0,0,0,0.2);
+            transition: all 0.1s;
+            cursor: pointer;
+            touch-action: none;
+        }
+        .ptt-btn.active {
+            transform: translateY(5px);
+            box-shadow: 0 5px 10px rgba(239, 68, 68, 0.4), inset 0 3px 0 rgba(0,0,0,0.2);
+            background: linear-gradient(145deg, #dc2626, #b91c1c);
+        }
+        .radar-ring {
+            position: absolute;
+            width: 100%; height: 100%;
+            border-radius: 50%;
+            border: 2px solid #ef4444;
+            animation: radar 1.5s infinite ease-out;
+            opacity: 0;
+            display: none;
+        }
         .ptt-btn.active .radar-ring { display: block; }
-        @keyframes radar { 0% { transform: scale(1); opacity: 0.8; } 100% { transform: scale(1.5); opacity: 0; } }
-        .speaker-hole { width: 8px; height: 8px; background: #222; border-radius: 50%; margin: 2px; }
+        @keyframes radar {
+            0% { transform: scale(1); opacity: 0.8; }
+            100% { transform: scale(1.5); opacity: 0; }
+        }
+        .speaker-hole {
+            width: 8px; height: 8px; background: #222; border-radius: 50%; margin: 2px;
+            box-shadow: inset 1px 1px 2px rgba(0,0,0,0.8);
+        }
     </style>
 </head>
 <body class="flex flex-col h-screen overflow-hidden antialiased">
@@ -24,81 +56,236 @@
         document.addEventListener("DOMContentLoaded", () => {
             const pttBtn = document.getElementById('ptt-btn');
             const statusText = document.getElementById('status-text');
+            const micErrorText = document.getElementById('mic-error-text');
+
             const FIXED_CHANNEL = "merkez_sabit_kanal_1"; 
             const currentTopic = "gtelsiz_v3_kanal_" + FIXED_CHANNEL;
-            
-            let mqttClient = null, mediaRecorder = null, audioChunks = [];
+
+            let mqttClient = null;
+            let mediaRecorder = null;
+            let audioChunks = [];
+            let isRecording = false;
+            let isPlaying = false;
             let audioPlayer = new Audio();
+            let audioUnlocked = false;
+            let activeMimeType = '';
+            
             const myClientId = 'user_' + Math.random().toString(16).substr(2, 8);
 
-            const connectMQTT = () => {
-                statusText.innerText = "Bağlanıyor...";
+            // iOS'ta ses çalma kilidini kırmak için ilk dokunuşta boş ses çal
+            const unlockAudio = () => {
+                if (!audioUnlocked) {
+                    audioPlayer.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
+                    audioPlayer.play().catch(()=>{});
+                    audioUnlocked = true;
+                }
+            };
+            document.body.addEventListener('touchstart', unlockAudio, { once: true });
+            document.body.addEventListener('mousedown', unlockAudio, { once: true });
+
+            const initRadio = async () => {
+                if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+                    micErrorText.innerHTML = "Güvenlik Hatası: URL'nin https:// ile başladığından emin olun.";
+                    micErrorText.classList.remove('hidden');
+                    statusText.innerText = "Bağlantı Engellendi";
+                    return;
+                }
+
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    micErrorText.innerHTML = "Hata: Cihazınız veya tarayıcınız mikrofonu desteklemiyor.";
+                    micErrorText.classList.remove('hidden');
+                    statusText.innerText = "Mikrofon Bulunamadı";
+                    return;
+                }
+
                 try {
-                    // WebSocket kısıtlamasını aşmak için denetim
-                    mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
-                    mqttClient.on('connect', () => {
-                        mqttClient.subscribe(currentTopic);
-                        statusText.innerText = "Bağlantı Başarılı";
-                    });
-                    mqttClient.on('error', (err) => {
-                        console.error("MQTT Hatası:", err);
-                        statusText.innerText = "Bağlantı Bekleniyor";
-                    });
-                } catch (e) {
-                    statusText.innerText = "Simülasyon Modu";
+                    statusText.innerText = "Mikrofon izni bekleniyor...";
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    setupMediaRecorder(stream);
+                    connectToChannel();
+                } catch (error) {
+                    micErrorText.innerHTML = "Mikrofon Hatası: İzin verilmedi veya mikrofon meşgul.";
+                    micErrorText.classList.remove('hidden');
+                    statusText.innerText = "İzin Reddedildi";
+                    statusText.className = "text-red-500 font-bold mt-4";
                 }
             };
 
-            document.body.addEventListener('pointerdown', () => {
-                audioPlayer.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
-                audioPlayer.play().catch(()=>{});
-            }, { once: true });
+            const connectToChannel = () => {
+                statusText.innerText = "Sunucuya bağlanıyor...";
+                statusText.className = "text-yellow-400 font-bold mt-4";
+                
+                mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
 
-            pttBtn.addEventListener('pointerdown', (e) => {
-                e.preventDefault();
-                pttBtn.classList.add('active');
-                navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-                    audioChunks = [];
-                    mediaRecorder = new MediaRecorder(stream);
-                    mediaRecorder.start();
-                    mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
-                    
-                    mediaRecorder.onstop = () => {
-                        const blob = new Blob(audioChunks, { type: 'audio/webm' });
-                        const reader = new FileReader();
-                        reader.readAsDataURL(blob);
-                        reader.onloadend = () => {
-                            if (mqttClient && mqttClient.connected) {
-                                mqttClient.publish(currentTopic, JSON.stringify({
-                                    senderId: myClientId,
-                                    audioBase64: reader.result
-                                }));
+                mqttClient.on('connect', () => {
+                    mqttClient.subscribe(currentTopic);
+                    statusText.innerText = "Dinleniyor...";
+                    statusText.className = "text-green-400 font-bold mt-4";
+                });
+
+                mqttClient.on('message', (topic, message) => {
+                    if (topic === currentTopic) {
+                        try {
+                            const data = JSON.parse(message.toString());
+                            if (data.senderId !== myClientId && data.audioBase64) {
+                                playIncomingAudio(data.audioBase64);
                             }
-                        };
-                    };
-                }).catch(err => statusText.innerText = "Mikrofon İzni Gerekli");
-            });
+                        } catch(e) {}
+                    }
+                });
 
-            pttBtn.addEventListener('pointerup', (e) => {
-                pttBtn.classList.remove('active');
-                if (mediaRecorder && mediaRecorder.state === "recording") {
-                    mediaRecorder.stop();
+                mqttClient.on('error', () => {
+                    statusText.innerText = "Bağlantı koptu!";
+                    statusText.className = "text-red-500 font-bold mt-4";
+                });
+            };
+
+            const setupMediaRecorder = (stream) => {
+                // Tarayıcıya göre en uygun formatı seç (Android için webm, iOS için mp4)
+                let options = {};
+                if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+                    activeMimeType = 'audio/webm;codecs=opus';
+                } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+                    activeMimeType = 'audio/webm';
+                } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+                    activeMimeType = 'audio/mp4';
+                } else {
+                    activeMimeType = ''; // Tarayıcı kendi varsayılanını kullansın
                 }
-            });
 
-            connectMQTT();
+                if (activeMimeType) options.mimeType = activeMimeType;
+                
+                mediaRecorder = new MediaRecorder(stream, options);
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = () => {
+                    if (audioChunks.length === 0) return;
+                    
+                    // iOS uyumluluğu için Blob oluştururken asıl mimeType'ı zorla
+                    const blobType = mediaRecorder.mimeType || activeMimeType || 'audio/mp4';
+                    const audioBlob = new Blob(audioChunks, { type: blobType });
+                    audioChunks = [];
+                    
+                    const reader = new FileReader();
+                    reader.readAsDataURL(audioBlob);
+                    reader.onloadend = () => {
+                        sendAudioData(reader.result);
+                    };
+                };
+            };
+
+            const sendAudioData = (base64data) => {
+                if (!mqttClient || !mqttClient.connected) {
+                    statusText.innerText = "Bağlantı yok!";
+                    statusText.className = "text-red-500 font-bold mt-4";
+                    return;
+                }
+                
+                statusText.innerText = "Gönderiliyor...";
+                statusText.className = "text-yellow-400 font-bold mt-4";
+                
+                const payload = JSON.stringify({
+                    senderId: myClientId,
+                    audioBase64: base64data
+                });
+
+                mqttClient.publish(currentTopic, payload, () => {
+                    statusText.innerText = "Dinleniyor...";
+                    statusText.className = "text-green-400 font-bold mt-4";
+                });
+            };
+
+            const playIncomingAudio = (base64data) => {
+                if (isPlaying) return;
+                
+                isPlaying = true;
+                statusText.innerText = "Biri konuşuyor...";
+                statusText.className = "text-blue-400 font-bold mt-4";
+                
+                audioPlayer.src = base64data;
+                audioPlayer.play().catch(e => {
+                    console.log("Çalma hatası:", e);
+                    isPlaying = false;
+                    statusText.innerText = "Dinleniyor...";
+                    statusText.className = "text-green-400 font-bold mt-4";
+                });
+                
+                audioPlayer.onended = () => {
+                    isPlaying = false;
+                    statusText.innerText = "Dinleniyor...";
+                    statusText.className = "text-green-400 font-bold mt-4";
+                };
+            };
+
+            // iOS ve Android için en sağlam dokunmatik olay yönetimi
+            const startTalking = (e) => {
+                if (e.cancelable) e.preventDefault(); // Ekranın kaymasını ve çift tıklamayı önler
+                if (!mediaRecorder || isRecording || isPlaying) return;
+                
+                isRecording = true;
+                pttBtn.classList.add('active');
+                statusText.innerText = "Konuşuyorsunuz...";
+                statusText.className = "text-red-400 font-bold mt-4";
+                audioChunks = [];
+                mediaRecorder.start();
+            };
+
+            const stopTalking = (e) => {
+                if (e && e.cancelable) e.preventDefault();
+                if (!mediaRecorder || !isRecording) return;
+                
+                isRecording = false;
+                pttBtn.classList.remove('active');
+                mediaRecorder.stop();
+            };
+
+            // Fare (Bilgisayar) için
+            pttBtn.addEventListener('mousedown', startTalking);
+            window.addEventListener('mouseup', stopTalking);
+            
+            // Dokunmatik Ekranlar (iOS ve Android) için
+            pttBtn.addEventListener('touchstart', startTalking, { passive: false });
+            window.addEventListener('touchend', stopTalking, { passive: false });
+            window.addEventListener('touchcancel', stopTalking, { passive: false });
+
+            initRadio();
         });
     </script>
 
-    <div id="radio-screen" class="flex-1 flex flex-col bg-gray-900 justify-center items-center">
-        <div class="relative w-48 h-48 flex items-center justify-center">
-            <div id="ptt-btn" class="ptt-btn w-40 h-40 rounded-full flex flex-col items-center justify-center select-none relative z-10 border-4 border-red-900">
-                <div class="radar-ring"></div>
-                <i class="fa-solid fa-microphone text-4xl mb-2 text-white"></i>
-                <span class="font-bold text-sm tracking-wider uppercase">Bas Konuş</span>
+    <div id="radio-screen" class="flex-1 flex flex-col bg-gray-900">
+        
+        <!-- Üst Bilgi Cubugu -->
+        <div class="bg-gray-800 p-4 flex justify-between items-center border-b border-gray-700 shadow-lg">
+            <div class="font-mono text-xl font-bold text-green-400">
+                <i class="fa-solid fa-signal mr-2"></i> MERKEZ KANAL
+            </div>
+            <div class="text-xs text-gray-500">Güvenli Hat</div>
+        </div>
+
+        <div class="flex-1 flex flex-col items-center justify-center p-4">
+            <p id="mic-error-text" class="hidden w-full max-w-sm text-center text-sm text-red-500 mb-8 font-bold bg-red-900/30 p-3 rounded border border-red-800"></p>
+
+            <div class="flex flex-wrap justify-center w-32 mb-12 opacity-50">
+                <div class="speaker-hole"></div><div class="speaker-hole"></div><div class="speaker-hole"></div><div class="speaker-hole"></div>
+                <div class="speaker-hole"></div><div class="speaker-hole"></div><div class="speaker-hole"></div><div class="speaker-hole"></div>
+                <div class="speaker-hole"></div><div class="speaker-hole"></div><div class="speaker-hole"></div><div class="speaker-hole"></div>
+            </div>
+
+            <div class="relative w-48 h-48 flex items-center justify-center">
+                <div id="ptt-btn" class="ptt-btn w-40 h-40 rounded-full flex flex-col items-center justify-center select-none relative z-10 border-4 border-red-900 focus:outline-none">
+                    <div class="radar-ring"></div>
+                    <i class="fa-solid fa-microphone text-4xl mb-2 text-white shadow-sm"></i>
+                    <span class="font-bold text-sm tracking-wider uppercase">Bas Konuş</span>
+                </div>
+            </div>
+
+            <div class="mt-12 text-center h-16">
+                <div id="status-text" class="text-gray-500 font-bold mt-4 tracking-widest uppercase">Başlatılıyor...</div>
             </div>
         </div>
-        <div id="status-text" class="text-gray-500 font-bold mt-12 uppercase">Hazır</div>
     </div>
 </body>
 </html>
